@@ -448,6 +448,7 @@
       border-radius: 8px;
       font-size: 0.9rem;
       display: none;
+      white-space: pre-line;
     }
 
     .feedback-msg.success {
@@ -800,8 +801,12 @@
   </footer>
 
   <script>
-    // Cole aqui a URL do App da Web do Google Apps Script (/exec)
+    // URL do App da Web do Google Apps Script (/exec)
     const API_URL = 'https://script.google.com/macros/s/AKfycbwIpCB0SofZTLn0H9wBUnMUF_M6IDW1UyEOMaTRgUVVRVrUVyGHNPxQdgWdbS6shZPF2Q/exec';
+
+    // Opcional: se quiser forçar a URL base da pasta img/ no GitHub (ex.: 'https://raw.githubusercontent.com/USUARIO/REPO/main/img').
+    // Se deixar vazio (''), usa 'img' quando hospedado no GitHub Pages/servidor ou tenta raw.githubusercontent.com se configurado.
+    const IMG_BASE_URL = 'https://pdssolucoescriativas.github.io/role_gastronomico/img';
 
     const CRITERIOS = [
       { key: 'ambiente', label: 'Ambiente' },
@@ -1075,6 +1080,8 @@
       btn.textContent = imagemSelecionada ? 'Enviando foto e avaliação...' : 'Enviando...';
       mostrarFeedback('', '');
 
+      const tinhaImagem = Boolean(imagemSelecionada);
+
       const payload = {
         estabelecimento: document.getElementById('estabelecimento').value.trim(),
         data_visita: document.getElementById('data_visita').value,
@@ -1092,14 +1099,40 @@
       };
 
       try {
-        await fetch(API_URL, {
+        const resp = await fetch(API_URL, {
           method: 'POST',
-          mode: 'no-cors',
+          redirect: 'follow',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
           body: JSON.stringify(payload)
         });
 
-        mostrarFeedback('Avaliação enviada! Atualizando o ranking...', 'success');
+        const texto = await resp.text();
+        let data;
+        try {
+          data = JSON.parse(texto);
+        } catch (_) {
+          throw new Error(`Resposta não-JSON do Apps Script (HTTP ${resp.status}): ${texto.slice(0, 220)}`);
+        }
+
+        if (!data.ok) {
+          throw new Error(data.error || 'Erro ao salvar avaliação na planilha.');
+        }
+
+        if (tinhaImagem && !data.imagem_enviada) {
+          mostrarFeedback(
+            `Avaliação #${data.registro?.id ?? ''} salva na planilha, mas a foto NÃO subiu para o GitHub:\n${data.imagem_erro || 'Erro não especificado.'}`,
+            'error'
+          );
+          btn.disabled = false;
+          btn.textContent = 'Salvar Avaliação';
+          return;
+        }
+
+        const msgSucesso = data.imagem_enviada && data.registro?.img
+          ? `Avaliação salva! Foto enviada como "${data.registro.img}". Atualizando o ranking...`
+          : 'Avaliação salva! Atualizando o ranking...';
+
+        mostrarFeedback(msgSucesso, 'success');
         document.getElementById('formAvaliacao').reset();
         limparImagemSelecionada();
         definirDataHoje();
@@ -1115,7 +1148,7 @@
         }, 1200);
       } catch (err) {
         console.error(err);
-        mostrarFeedback('Erro ao enviar avaliação. Verifique a conexão e a URL do Apps Script.', 'error');
+        mostrarFeedback(`Erro ao enviar avaliação: ${err.message}`, 'error');
       } finally {
         btn.disabled = false;
         btn.textContent = 'Salvar Avaliação';
@@ -1130,153 +1163,153 @@
         return;
       }
       el.textContent = msg;
-      el.classList.add(tipo);
+      if (tipo) {
+        el.classList.add(tipo);
+      }
     }
 
     async function carregarRankings() {
       const statusEl = document.getElementById('statusRanking');
       const listEl = document.getElementById('rankingList');
 
-      if (!API_URL || API_URL.includes('COLE_AQUI')) {
-        statusEl.style.display = 'block';
-        statusEl.innerHTML = '<p>Cole a URL do seu Google Apps Script na variável <strong>API_URL</strong> dentro do HTML para carregar os restaurantes.</p>';
-        return;
-      }
+      statusEl.style.display = 'block';
+      statusEl.innerHTML = `
+        <div class="spinner"></div>
+        <p>Carregando avaliações da planilha...</p>
+      `;
+      listEl.innerHTML = '';
 
       try {
-        const res = await fetch(API_URL);
-        const data = await res.json();
+        const sep = API_URL.includes('?') ? '&' : '?';
+        const resp = await fetch(`${API_URL}${sep}t=${Date.now()}`, { redirect: 'follow' });
+        const data = await resp.json();
 
         if (!data.ok) {
-          throw new Error(data.error || 'Falha ao consultar a planilha.');
+          throw new Error(data.error || 'Falha ao consultar rankings.');
         }
 
-        todosRankings = (data.rankings || []).map(item => {
-          const amb = parseNumero(item.ambiente);
-          const ate = parseNumero(item.atendimento);
-          const sab = parseNumero(item.sabor);
-          const cus = parseNumero(item.custo_beneficio);
-          const ban = parseNumero(item.banheiro);
-          const mediaRaw = parseNumero(item.media_final);
-          const mediaCalculada = mediaRaw > 0 ? mediaRaw : ((amb + ate + sab + cus + ban) / 5);
-
-          return {
-            id: item.id,
-            estabelecimento: item.estabelecimento || 'Sem nome',
-            data_visita: item.data_visita || '',
-            ambiente: amb,
-            atendimento: ate,
-            sabor: sab,
-            custo_beneficio: cus,
-            banheiro: ban,
-            media_final: mediaCalculada,
-            comentarios: item.comentarios || '',
-            voltaria: String(item.voltaria || '').trim().toLowerCase() === 'sim' ? 'Sim' : 'Não',
-            img: String(item.img || '').trim()
-          };
-        });
-
+        todosRankings = Array.isArray(data.rankings) ? data.rankings : [];
         statusEl.style.display = 'none';
         aplicarFiltros();
       } catch (err) {
         console.error(err);
         statusEl.style.display = 'block';
-        listEl.innerHTML = '';
-        statusEl.innerHTML = `<p>Não foi possível carregar o ranking: ${err.message}</p>`;
+        statusEl.innerHTML = `<p style="color: var(--danger);">Erro ao carregar ranking: ${escapeHtml(err.message)}</p>`;
       }
     }
 
     function aplicarFiltros() {
-      const termo = document.getElementById('buscaEstabelecimento').value.trim().toLowerCase();
+      const termo = (document.getElementById('buscaEstabelecimento').value || '').trim().toLowerCase();
       const voltariaFiltro = document.getElementById('filtroVoltaria').value;
-      const ordem = document.getElementById('ordenacaoRanking').value;
+      const ordenacao = document.getElementById('ordenacaoRanking').value;
 
-      let filtrados = todosRankings.filter(item => {
-        const matchTexto = !termo ||
-          item.estabelecimento.toLowerCase().includes(termo) ||
-          item.comentarios.toLowerCase().includes(termo);
+      const filtrados = todosRankings.filter(item => {
+        const est = String(item.estabelecimento || '').toLowerCase();
+        const com = String(item.comentarios || '').toLowerCase();
+        const volta = String(item.voltaria || '').trim();
 
-        const matchVoltaria = voltariaFiltro === 'todos' || item.voltaria === voltariaFiltro;
-        return matchTexto && matchVoltaria;
+        const bateTexto = !termo || est.includes(termo) || com.includes(termo);
+        const bateVolta = voltariaFiltro === 'todos' || volta.toLowerCase() === voltariaFiltro.toLowerCase();
+        return bateTexto && bateVolta;
       });
 
       filtrados.sort((a, b) => {
-        if (ordem === 'media_desc') return b.media_final - a.media_final;
-        if (ordem === 'data_desc') return String(b.data_visita).localeCompare(String(a.data_visita));
-        if (ordem === 'id_desc') return (Number(b.id) || 0) - (Number(a.id) || 0);
-        if (ordem === 'nome_asc') return a.estabelecimento.localeCompare(b.estabelecimento, 'pt-BR');
+        if (ordenacao === 'media_desc') {
+          return parseNumero(b.media_final) - parseNumero(a.media_final) || parseNumero(b.id) - parseNumero(a.id);
+        }
+        if (ordenacao === 'data_desc') {
+          return String(b.data_visita || '').localeCompare(String(a.data_visita || '')) || parseNumero(b.id) - parseNumero(a.id);
+        }
+        if (ordenacao === 'id_desc') {
+          return parseNumero(b.id) - parseNumero(a.id);
+        }
+        if (ordenacao === 'nome_asc') {
+          return String(a.estabelecimento || '').localeCompare(String(b.estabelecimento || ''), 'pt-BR');
+        }
         return 0;
       });
 
-      renderizarRanking(filtrados);
+      renderizarRankings(filtrados);
     }
 
-    function montarCaminhoImagem(imgValor) {
-      const limpo = String(imgValor || '').trim().replace(/^\/+/, '');
+    function montarUrlImagem(nomeImg) {
+      const limpo = String(nomeImg || '').trim();
       if (!limpo) return '';
-      if (limpo.startsWith('http://') || limpo.startsWith('https://') || limpo.startsWith('img/')) {
-        return limpo;
-      }
-      return `img/${limpo}`;
+      if (/^https?:\/\//i.test(limpo)) return limpo;
+      const base = (IMG_BASE_URL || 'img').replace(/\/+$/, '');
+      return `${base}/${encodeURIComponent(limpo)}?t=${Date.now()}`;
     }
 
-    function renderizarRanking(lista) {
+    function renderizarRankings(lista) {
       const listEl = document.getElementById('rankingList');
+      const statusEl = document.getElementById('statusRanking');
 
       if (!lista.length) {
-        listEl.innerHTML = '<div class="status-box"><p>Nenhum estabelecimento encontrado com os filtros atuais.</p></div>';
+        listEl.innerHTML = '';
+        statusEl.style.display = 'block';
+        statusEl.innerHTML = '<p>Nenhuma avaliação encontrada com os filtros atuais.</p>';
         return;
       }
 
+      statusEl.style.display = 'none';
+
       listEl.innerHTML = lista.map((item, idx) => {
-        const voltariaClass = item.voltaria === 'Sim' ? 'voltaria-sim' : 'voltaria-nao';
-        const srcImagem = montarCaminhoImagem(item.img);
-        const fotoHtml = srcImagem
+        const mediaNum = parseNumero(item.media_final);
+        const voltariaSim = String(item.voltaria || '').trim().toLowerCase() === 'sim';
+        const imgUrl = montarUrlImagem(item.img);
+
+        const photoHtml = imgUrl
           ? `
             <div class="card-photo-wrap">
               <img
-                src="${escapeHtml(srcImagem)}"
-                alt="Foto de ${escapeHtml(item.estabelecimento)}"
                 class="card-photo"
+                src="${imgUrl}"
+                alt="Foto de ${escapeHtml(item.estabelecimento || 'estabelecimento')}"
                 loading="lazy"
-                onerror="this.closest('.card-photo-wrap').style.display='none';"
+                onerror="this.closest('.card-photo-wrap').style.display='none'"
               >
             </div>
           `
           : '';
 
+        const criteriosHtml = CRITERIOS.map(c => {
+          const val = parseNumero(item[c.key]);
+          return `
+            <div class="criterion-mini">
+              <span class="criterion-mini-label">${c.label}</span>
+              <div class="criterion-mini-val">
+                <span class="stars-display">${renderizarEstrelasEstaticas(val, 'sm', `c_${idx}_${c.key}`)}</span>
+                <span>${formatarPt(val)}</span>
+              </div>
+            </div>
+          `;
+        }).join('');
+
         return `
           <article class="restaurant-card">
             <div class="card-top">
               <div>
-                <div class="card-rank-badge">#${idx + 1} no Ranking • ID ${item.id ?? '-'}</div>
-                <h2 class="card-title">${escapeHtml(item.estabelecimento)}</h2>
+                <div class="card-rank-badge">#${idx + 1} no Ranking • ID ${escapeHtml(item.id ?? '-')}</div>
+                <h3 class="card-title">${escapeHtml(item.estabelecimento || 'Sem nome')}</h3>
                 <div class="card-meta">Visita em ${formatarDataBr(item.data_visita)}</div>
               </div>
-
-              <div class="card-media-box" title="Média final calculada">
-                <span class="stars-display">${renderizarEstrelasEstaticas(item.media_final, '', `m_${idx}`)}</span>
-                <span class="card-media-num">${formatarPt(item.media_final)}</span>
+              <div class="card-media-box">
+                <span class="stars-display">${renderizarEstrelasEstaticas(mediaNum, '', `m_${idx}`)}</span>
+                <span class="card-media-num">${formatarPt(mediaNum)}</span>
               </div>
             </div>
 
-            ${fotoHtml}
+            ${photoHtml}
 
             <div class="criteria-grid">
-              ${CRITERIOS.map(c => `
-                <div class="criterion-mini">
-                  <span class="criterion-mini-label">${c.label}</span>
-                  <div class="criterion-mini-val">
-                    <span class="stars-display">${renderizarEstrelasEstaticas(item[c.key], 'sm', `c_${idx}_${c.key}`)}</span>
-                    <span>${formatarPt(item[c.key])}</span>
-                  </div>
-                </div>
-              `).join('')}
+              ${criteriosHtml}
             </div>
 
             <div class="card-footer-row">
-              <p class="card-comment">${item.comentarios ? `"${escapeHtml(item.comentarios)}"` : 'Sem comentários registrados.'}</p>
-              <span class="voltaria-pill ${voltariaClass}">Voltaria: ${item.voltaria}</span>
+              <p class="card-comment">${item.comentarios ? `“${escapeHtml(item.comentarios)}”` : 'Sem comentário registrado.'}</p>
+              <span class="voltaria-pill ${voltariaSim ? 'voltaria-sim' : 'voltaria-nao'}">
+                Voltaria: ${voltariaSim ? 'Sim' : 'Não'}
+              </span>
             </div>
           </article>
         `;
@@ -1284,7 +1317,7 @@
     }
 
     function escapeHtml(str) {
-      return String(str)
+      return String(str ?? '')
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
